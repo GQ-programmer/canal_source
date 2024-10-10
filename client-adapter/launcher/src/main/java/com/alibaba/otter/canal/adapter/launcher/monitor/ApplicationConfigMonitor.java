@@ -36,10 +36,25 @@ public class ApplicationConfigMonitor {
 
     private FileAlterationMonitor fileMonitor;
 
+    /**
+     * 创建一个文件观察者，监控 confDir 目录，每隔 3000 毫秒（3 秒）检查一次文件变化
+     */
+
+    public static void main(String[] args) {
+        File confDir = Util.getConfDirPath();
+        System.out.println(confDir);
+    }
+
     @PostConstruct
     public void init() {
         File confDir = Util.getConfDirPath();
         try {
+            /**
+             * FileFilterUtils.and(...)：组合多个文件过滤器，只有同时满足所有条件的文件才会被选中。
+             * FileFilterUtils.fileFileFilter()：只选择文件，不选择目录。
+             * FileFilterUtils.prefixFileFilter("application")：文件名以 "application" 开头。
+             * FileFilterUtils.suffixFileFilter("yml")：文件名以 ".yml" 结尾。
+             */
             FileAlterationObserver observer = new FileAlterationObserver(confDir,
                 FileFilterUtils.and(FileFilterUtils.fileFileFilter(),
                     FileFilterUtils.prefixFileFilter("application"),
