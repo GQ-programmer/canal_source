@@ -140,7 +140,7 @@ public class BooleanMutex {
             }
         }
 
-        void innerSetFalse() {
+        void  innerSetFalse() {
             for (;;) {
                 int s = getState();
                 if (s == FALSE) {

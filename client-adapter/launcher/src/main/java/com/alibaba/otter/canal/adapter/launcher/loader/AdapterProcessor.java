@@ -61,10 +61,12 @@ public class AdapterProcessor {
         this.groupInnerExecutorService = Util.newFixedThreadPool(canalOuterAdapters.size(), 5000L);
         syncSwitch = (SyncSwitch) SpringContext.getBean(SyncSwitch.class);
 
-        // load connector consumer
+        // load connector consumer 通过SPI 加载对应类型的消费者，进行初始化
         ExtensionLoader<CanalMsgConsumer> loader = new ExtensionLoader<>(CanalMsgConsumer.class);
         // see https://github.com/alibaba/canal/pull/5175
+        // instance + groupId
         String key = destination + "_" + groupId;
+        // mode 支持四种 tcp kafka rocketMQ rabbitMQ
         canalMsgConsumer = new ProxyCanalMsgConsumer(loader.getExtension(canalClientConfig.getMode().toLowerCase(),
             key,
             CONNECTOR_SPI_DIR,
@@ -187,6 +189,7 @@ public class AdapterProcessor {
                 canalMsgConsumer.connect();
                 logger.info("=============> Subscribe destination: {} succeed <=============", this.canalDestination);
                 while (running) {
+                    // 获取同步开关状态
                     try {
                         syncSwitch.get(canalDestination, 1L, TimeUnit.MINUTES);
                     } catch (TimeoutException e) {
@@ -220,6 +223,7 @@ public class AdapterProcessor {
                                 canalMsgConsumer.rollback(); // 处理失败, 回滚数据
                                 logger.error(e.getMessage() + " Error sync and rollback, execute times: " + (i + 1));
                             } else {
+                                // 重试次数用完时
                                 if (canalClientConfig.getTerminateOnException()) {
                                     canalMsgConsumer.rollback();
                                     logger.error("Retry fail, turn switch off and abort data transfer.");

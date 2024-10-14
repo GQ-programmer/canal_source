@@ -78,6 +78,7 @@ public class CanalAdapterLoader {
                                 canalAdapter.getInstance(),group.getGroupId());
                         throw new RuntimeException(msg);
                  }
+                // 每一组创建一个适配器处理器
                 AdapterProcessor adapterProcessor = canalAdapterProcessors.computeIfAbsent(
                     canalAdapter.getInstance() + "|" + StringUtils.trimToEmpty(group.getGroupId()),
                     f -> new AdapterProcessor(canalClientConfig,
