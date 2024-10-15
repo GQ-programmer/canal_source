@@ -376,3 +376,211 @@ Cliect-Adapter项目
 1. 项目的启动器，将配置的每一组各类型的（RDB、ES...）适配器进行初始化。
 2. 每一组适配器启动一个消费线程（类型 #tcp kafka rocketMQ rabbitMQ），一组对应一个topic，mq线程订阅topic，批量消费数据，将消费的数据写入到MQ消费者本地缓存阻塞队列中。
 3. 同一组适配器并行运行，从阻塞队列中取出数据，进行数据同步。
+
+## AQS的应用
+在启动适配器消费者线程时，使用了AQS的共享模式，实现了一个同步开关。当开关开启时，线程可以继续消费，关闭时，线程进行阻塞等待开关开启。
+
+下面是同步开关中的互斥实现
+```java
+public class BooleanMutex {
+
+    private final Sync sync;
+
+    public BooleanMutex(){
+        sync = new Sync();
+        set(false);
+    }
+
+    public BooleanMutex(Boolean mutex){
+        sync = new Sync();
+        set(mutex);
+    }
+
+    /**
+     * 阻塞等待Boolean为true
+     * 
+     * @throws InterruptedException if the current thread is interrupted
+     */
+    public void get() throws InterruptedException {
+        sync.innerGet();
+    }
+
+    /**
+     * 阻塞等待Boolean为true,允许设置超时时间
+     * 
+     * @param timeout
+     * @param unit
+     * @throws InterruptedException
+     * @throws TimeoutException
+     */
+    public void get(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException {
+        sync.innerGet(unit.toNanos(timeout));
+    }
+
+    /**
+     * 重新设置对应的Boolean mutex
+     * 
+     * @param mutex
+     */
+    public void set(Boolean mutex) {
+        if (mutex) {
+            sync.innerSetTrue();
+        } else {
+            sync.innerSetFalse();
+        }
+    }
+
+    public boolean state() {
+        return sync.innerState();
+    }
+
+    /**
+     * Synchronization control for BooleanMutex. Uses AQS sync state to
+     * represent run status
+     */
+    private static final class Sync extends AbstractQueuedSynchronizer {
+
+        private static final long serialVersionUID = 2559471934544126329L;
+        /** State value representing that TRUE */
+        private static final int  TRUE             = 1;
+        /** State value representing that FALSE */
+        private static final int  FALSE            = 2;
+
+        private boolean isTrue(int state) {
+            return (state & TRUE) != 0;
+        }
+
+        /**
+         * 实现AQS的接口，获取共享锁的判断
+         */
+        protected int tryAcquireShared(int state) {
+            // 如果为true，直接允许获取锁对象
+            // 如果为false，进入阻塞队列，等待被唤醒
+            return isTrue(getState()) ? 1 : -1;
+        }
+
+        /**
+         * 实现AQS的接口，释放共享锁的判断
+         */
+        protected boolean tryReleaseShared(int ignore) {
+            // 始终返回true，代表可以release
+            return true;
+        }
+
+        boolean innerState() {
+            return isTrue(getState());
+        }
+
+        void innerGet() throws InterruptedException {
+            acquireSharedInterruptibly(0);
+        }
+
+        void innerGet(long nanosTimeout) throws InterruptedException, TimeoutException {
+            if (!tryAcquireSharedNanos(0, nanosTimeout)) throw new TimeoutException();
+        }
+
+        void innerSetTrue() {
+            for (;;) {
+                int s = getState();
+                if (s == TRUE) {
+                    return; // 直接退出
+                }
+                if (compareAndSetState(s, TRUE)) {// cas更新状态，避免并发更新true操作
+                    releaseShared(0);// 释放一下锁对象，唤醒一下阻塞的Thread
+                    return;
+                }
+            }
+        }
+
+        void  innerSetFalse() {
+            for (;;) {
+                int s = getState();
+                if (s == FALSE) {
+                    return; // 直接退出
+                }
+                if (compareAndSetState(s, FALSE)) {// cas更新状态，避免并发更新false操作
+                    return;
+                }
+            }
+        }
+
+    }
+
+}
+
+```
+### sync.innerGet 方法
+该方法是阻塞等待Boolean为true，直到Boolean为true，才返回。
+innerGet() 方法内部调用了AQS的acquireSharedInterruptibly方法，该方法会阻塞当前线程，直到获取到锁对象，或者抛出异常。
+```java
+void innerGet() throws InterruptedException {
+    acquireSharedInterruptibly(0);
+}
+
+```
+
+### sync.innerSetTrue、sync.innerSetFalse 方法
+这两个方法内部调用了AQS的compareAndSetState方法，该方法会更新状态，并返回是否更新成功。
+compareAndSetState 方法简称CAS，比较并交换。是一个原子操作，可以保证线程安全。
+```java
+void innerSetTrue() {
+            for (;;) {
+                int s = getState();
+                if (s == TRUE) {
+                    return; // 直接退出
+                }
+                if (compareAndSetState(s, TRUE)) {// cas更新状态，避免并发更新true操作
+                    releaseShared(0);// 释放一下锁对象，唤醒一下阻塞的Thread
+                    return;
+                }
+            }
+        }
+
+        void  innerSetFalse() {
+            for (;;) {
+                int s = getState();
+                if (s == FALSE) {
+                    return; // 直接退出
+                }
+                if (compareAndSetState(s, FALSE)) {// cas更新状态，避免并发更新false操作
+                    return;
+                }
+            }
+        }
+```
+## Volatile 关键字的应用
+AdapterProcessor 类是Canal的适配器处理器，每组适配器会启动一个AdapterProcessor，
+该类初始化后，调用start方法后，会维护一个线程，去轮询获取mq中的消息。
+该类中维护了一个 running 变量，被 volatile 修饰。
+```java
+    private volatile boolean running = false; // 是否运行中
+```
+轮询中会判断 running 变量的状态，如果为false，则退出循环，停止消费。
+其他线程可以获取到当前 AdapterProcessor 对象，修改running的值，使当前AdapterProcessor停止消费。
+
+这时，其他线程和 AdapterProcessor 对象中轮询线程是多线程关系，running变量需要加上 volatile 关键字，使得其他线程修改running变量后，轮询线程能够立即获取到被其它线程所修改后的值。
+
+### Volatile 关键字作用和原理
+
+#### 作用
+1. 保证了多线程环境中，变量的 **可见性**
+2. 禁止指令重排序
+
+#### Volatie如何保证可见性的呢？
+
+![img_2.png](img_2.png)
+在 Java 中，每个线程都有自己的工作内存（缓存），用于存放它用到的变量的副本。当线程对变量进行修改时，它实际上是在自己的工作内存中对这个变量的副本进行操作，而不是直接操作主内存中的变量。只有在某个时刻，工作内存的变化才会同步到主内存中。这就导致了一个问题：当多个线程同时操作一个变量时，可能会出现变量的值在不同线程间不一致的情况。
+
+volatile 关键字就是用来解决这个问题的。当一个变量被声明为 volatile 时，所有对这个变量的写操作都会直接同步到主内存中，所有对这个变量的读操作都会直接从主内存中读取，从而保证了变量值的一致性。
+
+#### Volatile如何禁止指令重排序呢？
+
+为什么要禁止指令重排序呢？
+
+指令重排序是指在不影响单线程程序执行结果的前提下，编译器或处理器重新安排指令的执行顺序。以提高程序的执行效率。
+而在多线程环境下，指令重排序可能会导致数据不一致的情况。
+
+Volatile 关键字可以禁止指令重排序，因为volatile关键字会禁止编译器或处理器对变量的指令重排序。
+在底层实现上，volatile 的原理依赖于处理器提供的内存屏障（Memory Barrier）。内存屏障是一种 CPU 指令，它的作用是防止指定的内存操作被重排列。当一个变量被声明为 volatile 时，JVM 会在生成的字节码中插入内存屏障指令，以确保对这个变量的读写操作符合 volatile 的语义。
+
+参考链接：https://zhuanlan.zhihu.com/p/663042815
